@@ -37,6 +37,8 @@
   .leadchat input { flex:1; }
   .leadchat button { padding:7px 12px; white-space:nowrap; }
   .leadchat .lbl { font-size:11px; color:var(--dim); margin-bottom:6px; }
+  .leadchat button.mic { padding:7px 10px; background:var(--border); color:var(--text); }
+  .leadchat button.mic.rec { background:#f85149; color:#fff; animation:pulse 1s infinite; }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--dim); flex:none; }
   .dot.calisiyor { background:var(--ok); box-shadow:0 0 6px var(--ok); animation:pulse 1.2s infinite; }
   .dot.bekliyor { background:var(--warn); }
@@ -296,9 +298,10 @@ async function tick() {
       <div class="feed">${(a.events || []).map(renderEvent).join('') ||
         '<span class="ev">henüz etkinlik yok</span>'}</div>
       ${isLead ? `<div class="leadchat">
-        <div class="lbl">💬 Lidere doğrudan mesaj:</div>
+        <div class="lbl">💬 Lidere doğrudan mesaj (🎤 ile konuş):</div>
         <form onsubmit="sendLeadMsg(event)">
-          <input id="leadMsgIn" placeholder="lidere yaz… (soru, yönlendirme, onay)" autocomplete="off" />
+          <button type="button" id="micBtn" class="mic" onclick="toggleDictation()" title="konuş">🎤</button>
+          <input id="leadMsgIn" placeholder="lidere yaz ya da 🎤 ile konuş…" autocomplete="off" />
           <button type="submit">Gönder</button>
         </form></div>` : ''}
     </div>`;
@@ -308,6 +311,7 @@ async function tick() {
   const li = document.getElementById('leadMsgIn');
   if (li && leadDraft) li.value = leadDraft;
   if (li && leadFocused) { li.focus(); li.selectionStart = li.selectionEnd = li.value.length; }
+  updateMic(); // yeniden çizimde mikrofon kayıt durumunu koru
 
   $('messages').innerHTML = (s.messages || []).slice().reverse().map(m => `
     <div class="m"><span class="who">${esc(m.from)} → ${esc(m.to)}</span>
@@ -395,6 +399,44 @@ async function answerLead(id, index) {
   tick();
 }
 
+// Sesli giriş — tarayıcının konuşma tanıması metni chat kutusuna yazar; kullanıcı Gönder'e basar
+let recog = null, recognizing = false, dictBase = '';
+function updateMic() {
+  const b = document.getElementById('micBtn');
+  if (b) { b.classList.toggle('rec', recognizing); b.textContent = recognizing ? '⏺' : '🎤'; }
+}
+function toggleDictation() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { toast('Bu tarayıcı sesli girişi desteklemiyor (Chrome/Safari deneyin)', true); return; }
+  if (recognizing) { try { recog.stop(); } catch {} return; }
+  recog = new SR();
+  recog.lang = 'tr-TR';
+  recog.continuous = true;
+  recog.interimResults = true;
+  dictBase = ((document.getElementById('leadMsgIn') || {}).value || '').trim();
+  if (dictBase) dictBase += ' ';
+  recog.onresult = (e) => {
+    let interim = '', finalTxt = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalTxt += t + ' '; else interim += t;
+    }
+    if (finalTxt) dictBase += finalTxt;
+    const inp = document.getElementById('leadMsgIn');
+    if (inp) inp.value = (dictBase + interim).replace(/\s+/g, ' ').trimStart();
+  };
+  recog.onend = () => { recognizing = false; updateMic(); };
+  recog.onerror = (e) => {
+    recognizing = false; updateMic();
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed')
+      toast('Mikrofon izni gerekli', true);
+    else if (e.error !== 'no-speech' && e.error !== 'aborted')
+      toast('Ses hatası: ' + e.error, true);
+  };
+  try { recog.start(); recognizing = true; updateMic(); toast('🎤 Dinliyorum… konuş'); }
+  catch { recognizing = false; }
+}
+
 async function sendLeadMsg(ev) {
   ev.preventDefault();
   const inp = ev.target.querySelector('input');
@@ -403,7 +445,7 @@ async function sendLeadMsg(ev) {
   const btn = ev.target.querySelector('button');
   btn.disabled = true;
   const ok = await trySend(() => backend.leadMsg(text), '✓ Lidere iletildi');
-  if (ok) inp.value = '';
+  if (ok) { inp.value = ''; dictBase = ''; if (recognizing) { try { recog.stop(); } catch {} } }
   btn.disabled = false;
 }
 
