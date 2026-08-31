@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Mission Control</title>
+<script src="config.js"></script>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e;
+          --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --msg:#bc8cff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; align-items:baseline; gap:16px; padding:12px 20px; border-bottom:1px solid var(--border);
+           position:sticky; top:0; background:var(--bg); z-index:2; }
+  header h1 { font-size:16px; } header .team { color:var(--accent); }
+  header .mode { color:var(--dim); font-size:11px; }
+  header .time { margin-left:auto; color:var(--dim); font-size:12px; }
+  .layout { display:grid; grid-template-columns: 1fr 360px; gap:14px; padding:14px 20px; align-items:start; }
+  @media (max-width: 980px) { .layout { grid-template-columns:1fr; } }
+  .agents { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px; }
+  .pane { background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .pane h2 { font-size:13px; padding:8px 12px; border-bottom:1px solid var(--border);
+             display:flex; align-items:center; gap:8px; }
+  .pane h2 .type { color:var(--dim); font-weight:normal; font-size:11px; }
+  .pane h2 .btns { margin-left:auto; display:flex; gap:6px; }
+  .pane h2 .btns span { cursor:pointer; opacity:.55; font-size:12px; }
+  .pane h2 .btns span:hover { opacity:1; }
+  .role { font-size:11px; color:var(--dim); padding:5px 12px; border-bottom:1px solid var(--border); font-style:italic; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--dim); flex:none; }
+  .dot.calisiyor { background:var(--ok); box-shadow:0 0 6px var(--ok); animation:pulse 1.2s infinite; }
+  .dot.bekliyor { background:var(--warn); }
+  @keyframes pulse { 50% { opacity:.4; } }
+  .feed { max-height:320px; overflow-y:auto; padding:8px 12px; display:flex; flex-direction:column; gap:5px; }
+  .ev { font-size:12px; color:var(--dim); word-break:break-word; }
+  .ev b { color:var(--text); font-weight:600; }
+  .ev.tool b { color:var(--accent); }
+  .ev.text { color:var(--text); }
+  .ev.msg-in, .ev.msg-out { color:var(--msg); }
+  .side { display:flex; flex-direction:column; gap:14px; position:sticky; top:60px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; }
+  .card h3 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim);
+             padding:8px 12px; border-bottom:1px solid var(--border); }
+  .card .body { padding:8px 12px; max-height:300px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; }
+  .m { font-size:12px; border-left:3px solid var(--msg); padding-left:8px; }
+  .m .who { color:var(--msg); font-weight:600; } .m .when { color:var(--dim); font-size:10px; }
+  .task { font-size:12px; border-left:3px solid var(--accent); padding-left:8px; color:var(--dim); }
+  .task b { color:var(--text); }
+  form { display:flex; flex-direction:column; gap:8px; padding:10px 12px; }
+  input, textarea, button { font:inherit; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:6px; padding:7px 9px; }
+  textarea { resize:vertical; min-height:60px; }
+  button { background:var(--accent); color:#04182e; font-weight:700; cursor:pointer; border:none; }
+  button:active { opacity:.8; }
+  .hint { font-size:11px; color:var(--dim); padding:0 12px 10px; }
+  .empty { padding:40px; text-align:center; color:var(--dim); }
+  .empty code { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰 Agent Mission Control</h1>
+  <span class="team" id="teamName">ekip bekleniyor…</span>
+  <span class="mode" id="mode"></span>
+  <span class="time" id="clock"></span>
+</header>
+<div class="layout">
+  <div class="agents" id="agents"><div class="empty">Henüz veri yok.<br><br>
+    Mac'te toplayıcı çalışıyor olmalı: <code>node local/collector.js</code></div></div>
+  <div class="side">
+    <div class="card">
+      <h3>📨 Mesaj Trafiği</h3>
+      <div class="body" id="messages"><span class="ev">agentlar arası mesaj yok</span></div>
+    </div>
+    <div class="card">
+      <h3>🗂 Görev Panosu</h3>
+      <div class="body" id="tasks"><span class="ev">görev yok</span></div>
+    </div>
+    <div class="card">
+      <h3>🤖 Yeni Agent</h3>
+      <form id="newAgentForm">
+        <input id="naName" placeholder="agent adı (örn: altyapı)" />
+        <textarea id="naRole" placeholder="genel görev tanımı (örn: Yeni proje yaratma, GitHub repo kurulumu, Vercel/Supabase ayarları)"></textarea>
+        <button type="submit">Lidere İlet</button>
+      </form>
+      <div class="hint">İstek kuyruğa direktif olarak yazılır; lider boşta kalınca yeni üyeyi kurar ve panelde belirir.</div>
+    </div>
+    <div class="card">
+      <h3>➕ Görev Ver</h3>
+      <form id="assignForm">
+        <input id="agentIn" placeholder="hedef agent (örn: lider)" />
+        <textarea id="textIn" placeholder="görev tanımı…"></textarea>
+        <button type="submit">Kuyruğa Ekle</button>
+      </form>
+      <div class="hint">Görev <code>task-queue.md</code> dosyasına yazılır; lider boşta kaldığında görevi alıp dağıtır.</div>
+    </div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtT = (ts) => ts ? new Date(ts).toLocaleTimeString('tr-TR') : '';
+
+// ---- backend adaptörü: localhost'ta yerel API, webde Supabase RPC ----
+const CFG = window.PANEL_CONFIG || {};
+const IS_LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
+
+function getToken() {
+  let t = null;
+  try { t = localStorage.getItem('panelToken'); } catch {}
+  if (!t) {
+    t = prompt('Panel erişim tokenını gir:');
+    if (t) { try { localStorage.setItem('panelToken', t.trim()); } catch {} }
+  }
+  return (t || '').trim();
+}
+
+async function rpc(fn, args) {
+  const res = await fetch(`${CFG.supabaseUrl}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: CFG.anonKey,
+               Authorization: `Bearer ${CFG.anonKey}` },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 400 && body.includes('unauthorized')) {
+      try { localStorage.removeItem('panelToken'); } catch {}
+      throw new Error('token');
+    }
+    throw new Error('rpc ' + res.status);
+  }
+  return res.json();
+}
+
+const backend = IS_LOCAL ? {
+  state: () => fetch('/api/state').then(r => r.json()),
+  assign: (agent, text) => fetch('/api/assign', { method: 'POST',
+    headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent, text }) }),
+  meta: (key, alias, role) => fetch('/api/agent-meta', { method: 'POST',
+    headers: {'Content-Type':'application/json'}, body: JSON.stringify({ key, alias, role }) }),
+  control: (action, name, role) => fetch('/api/team-control', { method: 'POST',
+    headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action, name, role }) }),
+} : {
+  state: () => rpc('state_get', { p_token: getToken() }),
+  assign: (agent, text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'assign', agent, text } }),
+  meta: (key, alias, role) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'agent-meta', key, alias, role } }),
+  control: (action, name, role) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'team-control', action, name, role } }),
+};
+$('mode').textContent = IS_LOCAL ? '(yerel)' : '(web)';
+
+const ICON = { Bash:'⌨️', Read:'📖', Write:'✍️', Edit:'✏️', SendMessage:'📨', Agent:'🤖',
+               TaskCreate:'🗂', TaskUpdate:'🗂', Grep:'🔍', Glob:'🔍', WebSearch:'🌐', WebFetch:'🌐' };
+
+function renderEvent(e) {
+  if (e.kind === 'tool') {
+    const cls = e.tool === 'SendMessage' ? 'ev msg-out' : 'ev tool';
+    return `<div class="${cls}">${ICON[e.tool] || '🔧'} <b>${esc(e.tool)}</b> ${esc(e.label)}</div>`;
+  }
+  if (e.kind === 'msg-in') return `<div class="ev msg-in">📩 ${esc(e.label)}</div>`;
+  return `<div class="ev text">💬 ${esc(e.label)}</div>`;
+}
+
+async function tick() {
+  let s;
+  try { s = await backend.state(); } catch (e) { return; }
+  if (!s || !s.teams) return;
+  $('clock').textContent = new Date(s.generatedAt).toLocaleTimeString('tr-TR');
+  const team = s.teams[0];
+  if (!team) return;
+  $('teamName').textContent = 'ekip: ' + team.name +
+    (s.teams.length > 1 ? ` (+${s.teams.length - 1} ekip daha)` : '');
+
+  $('agents').innerHTML = team.agents.map(a => {
+    const shown = a.alias || a.name;
+    return `
+    <div class="pane">
+      <h2><span class="dot ${esc(a.status)}"></span> ${esc(shown)}
+          <span class="type">${esc(a.type)} · ${esc(a.status)}</span>
+          <span class="btns">
+            <span title="isim/rol düzenle" onclick="editAgent('${esc(a.key)}','${esc(shown)}')">✏️</span>
+            <span title="ekipten çıkar" onclick="removeAgent('${esc(shown)}')">✖</span>
+          </span></h2>
+      ${a.role ? `<div class="role">${esc(a.role)}</div>` : ''}
+      <div class="feed">${(a.events || []).map(renderEvent).join('') ||
+        '<span class="ev">henüz etkinlik yok</span>'}</div>
+    </div>`;
+  }).join('') || '<div class="empty">Ekipte üye görünmüyor.</div>';
+
+  $('messages').innerHTML = (s.messages || []).slice().reverse().map(m => `
+    <div class="m"><span class="who">${esc(m.from)} → ${esc(m.to)}</span>
+      <span class="when">${fmtT(m.ts)}</span><br>${esc(m.text)}</div>`).join('') ||
+    '<span class="ev">agentlar arası mesaj yok</span>';
+
+  const allTasks = s.teams.flatMap(t => t.tasks || []);
+  $('tasks').innerHTML = allTasks.map(t => {
+    const title = t.subject || t.description || t.content || t.raw || JSON.stringify(t).slice(0, 120);
+    const st = t.status ? ` · ${t.status}` : '';
+    const owner = t.owner || t.assignee || t.agent || '';
+    return `<div class="task"><b>${esc(title)}</b>${esc(st)}${owner ? ' · @' + esc(owner) : ''}</div>`;
+  }).join('') || '<span class="ev">görev yok</span>';
+
+  document.querySelectorAll('.feed').forEach(f => { f.scrollTop = f.scrollHeight; });
+}
+
+async function editAgent(key, current) {
+  const alias = prompt('Bu agent panelde hangi isimle görünsün?', current);
+  if (alias === null) return;
+  const role = prompt('Genel görev tanımı (boş bırakılabilir):', '');
+  if (role === null) return;
+  await backend.meta(key, alias.trim(), role.trim());
+  tick();
+}
+
+async function removeAgent(name) {
+  if (!confirm(`"${name}" ekipten çıkarılsın mı? (Lidere direktif iletilir)`)) return;
+  await backend.control('remove', name, '');
+}
+
+$('newAgentForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const name = $('naName').value.trim();
+  if (!name) return;
+  await backend.control('add', name, $('naRole').value.trim());
+  $('naName').value = ''; $('naRole').value = '';
+});
+
+$('assignForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const text = $('textIn').value.trim();
+  if (!text) return;
+  await backend.assign($('agentIn').value.trim() || 'lider', text);
+  $('textIn').value = '';
+});
+
+tick();
+setInterval(tick, IS_LOCAL ? 2000 : 4000);
+</script>
+</body>
+</html>
