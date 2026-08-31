@@ -54,6 +54,15 @@
   .hint { font-size:11px; color:var(--dim); padding:0 12px 10px; }
   .empty { padding:40px; text-align:center; color:var(--dim); }
   .empty code { color:var(--accent); }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:var(--ok); color:#04200d; font-weight:700; padding:10px 18px; border-radius:8px;
+    opacity:0; transition:opacity .3s; pointer-events:none; z-index:9; }
+  #toast.err { background:#f85149; color:#2b0505; }
+  #toast.show { opacity:1; }
+  #stale { display:none; background:#f85149; color:#2b0505; font-weight:700;
+    padding:6px 20px; font-size:12px; }
+  .q { font-size:12px; border-left:3px solid var(--warn); padding-left:8px; color:var(--dim); }
+  .q b { color:var(--text); }
 </style>
 </head>
 <body>
@@ -63,6 +72,8 @@
   <span class="mode" id="mode"></span>
   <span class="time" id="clock"></span>
 </header>
+<div id="stale">⚠️ Mac ile bağlantı kopuk görünüyor — veri eski. Toplayıcının çalıştığından emin ol: <code>node local/collector.js</code></div>
+<div id="toast"></div>
 <div class="layout">
   <div class="agents" id="agents"><div class="empty">Henüz veri yok.<br><br>
     Mac'te toplayıcı çalışıyor olmalı: <code>node local/collector.js</code></div></div>
@@ -74,6 +85,10 @@
     <div class="card">
       <h3>🗂 Görev Panosu</h3>
       <div class="body" id="tasks"><span class="ev">görev yok</span></div>
+    </div>
+    <div class="card">
+      <h3>⏳ Bekleyen Direktifler</h3>
+      <div class="body" id="pending"><span class="ev">bekleyen direktif yok</span></div>
     </div>
     <div class="card">
       <h3>🤖 Yeni Agent</h3>
@@ -132,14 +147,15 @@ async function rpc(fn, args) {
   return res.json();
 }
 
+const post = (url, body) => fetch(url, { method: 'POST',
+  headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
+  .then(r => { if (!r.ok) throw new Error('http ' + r.status); return r; });
+
 const backend = IS_LOCAL ? {
   state: () => fetch('/api/state').then(r => r.json()),
-  assign: (agent, text) => fetch('/api/assign', { method: 'POST',
-    headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agent, text }) }),
-  meta: (key, alias, role) => fetch('/api/agent-meta', { method: 'POST',
-    headers: {'Content-Type':'application/json'}, body: JSON.stringify({ key, alias, role }) }),
-  control: (action, name, role) => fetch('/api/team-control', { method: 'POST',
-    headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action, name, role }) }),
+  assign: (agent, text) => post('/api/assign', { agent, text }),
+  meta: (key, alias, role) => post('/api/agent-meta', { key, alias, role }),
+  control: (action, name, role) => post('/api/team-control', { action, name, role }),
 } : {
   state: () => rpc('state_get', { p_token: getToken() }),
   assign: (agent, text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'assign', agent, text } }),
@@ -160,11 +176,29 @@ function renderEvent(e) {
   return `<div class="ev text">💬 ${esc(e.label)}</div>`;
 }
 
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = (isErr ? 'err ' : '') + 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ''; }, 2500);
+}
+
 async function tick() {
   let s;
   try { s = await backend.state(); } catch (e) { return; }
   if (!s || !s.teams) return;
   $('clock').textContent = new Date(s.generatedAt).toLocaleTimeString('tr-TR');
+  const ageMs = Date.now() - Date.parse(s.generatedAt);
+  $('stale').style.display = (!IS_LOCAL && ageMs > 30_000) ? 'block' : 'none';
+
+  const pendingLines = String(s.queue || '').split('\n').filter(l => l.startsWith('- [ ]'));
+  $('pending').innerHTML = pendingLines.map(l => {
+    const m = l.match(/^- \[ \] \(([^)]+)\)\s*(.*)$/);
+    const text = (m ? m[2] : l.slice(5)).replace(/\*\*/g, '');
+    return `<div class="q"><b>${esc(text.slice(0, 200))}</b>${m ? ` <span class="when">${fmtT(m[1])}</span>` : ''}</div>`;
+  }).join('') || '<span class="ev">bekleyen direktif yok</span>';
   const team = s.teams[0];
   if (!team) return;
   $('teamName').textContent = 'ekip: ' + team.name +
@@ -202,34 +236,41 @@ async function tick() {
   document.querySelectorAll('.feed').forEach(f => { f.scrollTop = f.scrollHeight; });
 }
 
+async function trySend(fn, okMsg) {
+  try { await fn(); toast(okMsg); return true; }
+  catch (e) { toast(e.message === 'token' ? 'Token geçersiz — sayfayı yenileyip tekrar gir' : 'Gönderilemedi: ' + e.message, true); return false; }
+}
+
 async function editAgent(key, current) {
   const alias = prompt('Bu agent panelde hangi isimle görünsün?', current);
   if (alias === null) return;
   const role = prompt('Genel görev tanımı (boş bırakılabilir):', '');
   if (role === null) return;
-  await backend.meta(key, alias.trim(), role.trim());
+  await trySend(() => backend.meta(key, alias.trim(), role.trim()), '✓ Kaydedildi');
   tick();
 }
 
 async function removeAgent(name) {
   if (!confirm(`"${name}" ekipten çıkarılsın mı? (Lidere direktif iletilir)`)) return;
-  await backend.control('remove', name, '');
+  await trySend(() => backend.control('remove', name, ''), '✓ Çıkarma direktifi lidere iletildi');
 }
 
 $('newAgentForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const name = $('naName').value.trim();
   if (!name) return;
-  await backend.control('add', name, $('naRole').value.trim());
-  $('naName').value = ''; $('naRole').value = '';
+  const ok = await trySend(() => backend.control('add', name, $('naRole').value.trim()),
+    `✓ "${name}" isteği lidere iletildi — kurulunca panelde belirecek`);
+  if (ok) { $('naName').value = ''; $('naRole').value = ''; }
 });
 
 $('assignForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const text = $('textIn').value.trim();
   if (!text) return;
-  await backend.assign($('agentIn').value.trim() || 'lider', text);
-  $('textIn').value = '';
+  const ok = await trySend(() => backend.assign($('agentIn').value.trim() || 'lider', text),
+    '✓ Görev kuyruğa eklendi');
+  if (ok) $('textIn').value = '';
 });
 
 tick();
