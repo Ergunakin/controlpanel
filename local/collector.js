@@ -101,6 +101,30 @@ function extractAgentNames(file) {
   return nameById;
 }
 
+// Liderin henüz yanıtlanmamış AskUserQuestion çağrısını bul (panelden yanıtlamak için)
+function scanPendingQuestion(file) {
+  const asks = {}, answered = new Set();
+  for (const line of tailLines(file)) {
+    const obj = safe(() => JSON.parse(line), null);
+    if (!obj || !obj.message) continue;
+    const content = Array.isArray(obj.message.content) ? obj.message.content : [];
+    for (const b of content) {
+      if (b.type === 'tool_use' && b.name === 'AskUserQuestion' && b.input) asks[b.id] = b.input;
+      else if (b.type === 'tool_result' && b.tool_use_id) answered.add(b.tool_use_id);
+    }
+  }
+  const ids = Object.keys(asks).filter(id => !answered.has(id));
+  const id = ids[ids.length - 1];
+  if (!id) return null;
+  return {
+    id,
+    questions: (asks[id].questions || []).map(q => ({
+      question: q.question, header: q.header || '',
+      options: (q.options || []).map(o => ({ label: o.label, description: o.description || '' })),
+    })),
+  };
+}
+
 function compactInput(name, input) {
   if (!input || typeof input !== 'object') return '';
   const pick = (...keys) => keys.map(k => input[k]).find(v => typeof v === 'string' && v.trim());
@@ -249,6 +273,10 @@ function collectState() {
         for (const line of tailLines(a.file)) parseLine(line, a.alias || a.name, events, state.messages);
         a.lastActivity = mtime(a.file);
         a.status = now - a.lastActivity < 20_000 ? 'calisiyor' : 'bekliyor';
+        if (a.type === 'team-lead') {
+          a.pendingQuestion = scanPendingQuestion(a.file);
+          lastLeadFile = a.file; // lead-answer doğrulaması için
+        }
       } else {
         a.status = 'transcript-yok';
       }
@@ -330,13 +358,45 @@ function doProject(action, name, repoFull) {
   return false;
 }
 
+// ---- liderle doğrudan etkileşim (liderin tmux oturumuna tuş göndererek) ----
+const LEAD_TMUX = process.env.MC_LEAD_TMUX || 'lead';
+let lastLeadFile = null;
+
+function tmuxKeys(args, cb) {
+  execFile('tmux', ['send-keys', '-t', LEAD_TMUX, ...args], { timeout: 10_000 }, (err) => cb && cb(!err));
+}
+
+function doLeadMsg(text) {
+  text = String(text || '').replace(/[\r\n]+/g, ' ').slice(0, 2000).trim();
+  if (!text) return false;
+  tmuxKeys(['-l', text], (ok) => { if (ok) setTimeout(() => tmuxKeys(['Enter']), 300); });
+  return true;
+}
+
+function doLeadAnswer(toolUseId, optionIndex) {
+  optionIndex = Math.max(0, Math.min(10, Number(optionIndex) || 0));
+  // Soru hâlâ açık mı? Kapandıysa tuş göndermek liderin yazı kutusuna karışır — gönderme.
+  const pending = lastLeadFile ? scanPendingQuestion(lastLeadFile) : null;
+  if (!pending || pending.id !== toolUseId) return false;
+  const keys = Array(optionIndex).fill('Down').concat(['Enter']);
+  tmuxKeys(keys);
+  return true;
+}
+
+const COMMAND_HANDLERS = {
+  'assign': (p) => doAssign(p.agent, p.text),
+  'agent-meta': (p) => doMeta(p.key, p.alias, p.role),
+  'team-control': (p) => doControl(p.action, p.name, p.role),
+  'project': (p) => doProject(p.action, p.name, p.repo),
+  'refresh-repos': () => refreshGhRepos(),
+  'lead-msg': (p) => doLeadMsg(p.text),
+  'lead-answer': (p) => doLeadAnswer(p.id, p.index),
+};
+
 function applyCommand(payload) {
   if (!payload || typeof payload !== 'object') return;
-  if (payload.type === 'assign') doAssign(payload.agent, payload.text);
-  else if (payload.type === 'agent-meta') doMeta(payload.key, payload.alias, payload.role);
-  else if (payload.type === 'team-control') doControl(payload.action, payload.name, payload.role);
-  else if (payload.type === 'project') doProject(payload.action, payload.name, payload.repo);
-  else if (payload.type === 'refresh-repos') refreshGhRepos();
+  const handler = COMMAND_HANDLERS[payload.type];
+  if (handler) handler(payload);
 }
 
 // ---------- Supabase eşitleme ----------
@@ -379,6 +439,8 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/team-control' && req.method === 'POST') return readBody(j => json({ ok: doControl(j.action, j.name, j.role) }));
   if (req.url === '/api/project' && req.method === 'POST') return readBody(j => json({ ok: doProject(j.action, j.name, j.repo) }));
   if (req.url === '/api/refresh-repos' && req.method === 'POST') { refreshGhRepos(); return json({ ok: true }); }
+  if (req.url === '/api/lead-msg' && req.method === 'POST') return readBody(j => json({ ok: doLeadMsg(j.text) }));
+  if (req.url === '/api/lead-answer' && req.method === 'POST') return readBody(j => json({ ok: doLeadAnswer(j.id, j.index) }));
   if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(path.join(REPO, 'index.html')));

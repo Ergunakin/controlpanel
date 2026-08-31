@@ -26,6 +26,17 @@
   .pane h2 .btns span { cursor:pointer; opacity:.55; font-size:12px; }
   .pane h2 .btns span:hover { opacity:1; }
   .role { font-size:11px; color:var(--dim); padding:5px 12px; border-bottom:1px solid var(--border); font-style:italic; }
+  .ask { background:#3d2b00; border-bottom:1px solid var(--border); padding:9px 12px; }
+  .ask .q { color:#ffd479; font-weight:600; font-size:12px; margin-bottom:6px; display:block; }
+  .ask .opt { display:block; width:100%; text-align:left; background:var(--bg); color:var(--text);
+    border:1px solid var(--warn); border-radius:6px; padding:6px 9px; margin:4px 0; cursor:pointer; font-size:12px; }
+  .ask .opt:hover { background:var(--warn); color:#2b1d00; }
+  .ask .opt .d { color:var(--dim); font-size:11px; } .ask .opt:hover .d { color:#3d2b00; }
+  .leadchat { border-top:1px solid var(--border); padding:8px 12px; }
+  .leadchat form { flex-direction:row; padding:0; gap:6px; }
+  .leadchat input { flex:1; }
+  .leadchat button { padding:7px 12px; white-space:nowrap; }
+  .leadchat .lbl { font-size:11px; color:var(--dim); margin-bottom:6px; }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--dim); flex:none; }
   .dot.calisiyor { background:var(--ok); box-shadow:0 0 6px var(--ok); animation:pulse 1.2s infinite; }
   .dot.bekliyor { background:var(--warn); }
@@ -188,6 +199,8 @@ const backend = IS_LOCAL ? {
   control: (action, name, role) => post('/api/team-control', { action, name, role }),
   project: (action, name, repo) => post('/api/project', { action, name, repo }),
   refreshRepos: () => post('/api/refresh-repos', {}),
+  leadMsg: (text) => post('/api/lead-msg', { text }),
+  leadAnswer: (id, index) => post('/api/lead-answer', { id, index }),
 } : {
   state: () => rpc('state_get', { p_token: getToken() }),
   assign: (agent, text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'assign', agent, text } }),
@@ -195,6 +208,8 @@ const backend = IS_LOCAL ? {
   control: (action, name, role) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'team-control', action, name, role } }),
   project: (action, name, repo) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'project', action, name, repo } }),
   refreshRepos: () => rpc('command_add', { p_token: getToken(), p_payload: { type: 'refresh-repos' } }),
+  leadMsg: (text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'lead-msg', text } }),
+  leadAnswer: (id, index) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'lead-answer', id, index } }),
 };
 $('mode').textContent = IS_LOCAL ? '(yerel)' : '(web)';
 
@@ -238,21 +253,38 @@ async function tick() {
   $('teamName').textContent = 'ekip: ' + team.name +
     (s.teams.length > 1 ? ` (+${s.teams.length - 1} ekip daha)` : '');
 
+  // Lider mesaj kutusundaki yazılmakta olan metni yeniden çizimde koru
+  const leadDraft = (document.getElementById('leadMsgIn') || {}).value || '';
+  const leadFocused = document.activeElement && document.activeElement.id === 'leadMsgIn';
+
   $('agents').innerHTML = team.agents.map(a => {
     const shown = a.alias || a.name;
+    const isLead = a.type === 'team-lead';
     return `
     <div class="pane">
       <h2><span class="dot ${esc(a.status)}"></span> ${esc(shown)}
           <span class="type">${esc(a.type)} · ${esc(a.status)}</span>
           <span class="btns">
-            <span title="isim/rol düzenle" onclick="editAgent('${esc(a.key)}','${esc(shown)}')">✏️</span>
-            <span title="ekipten çıkar" onclick="removeAgent('${esc(shown)}')">✖</span>
+            ${isLead ? '' : `<span title="isim/rol düzenle" onclick="editAgent('${esc(a.key)}','${esc(shown)}')">✏️</span>
+            <span title="ekipten çıkar" onclick="removeAgent('${esc(shown)}')">✖</span>`}
           </span></h2>
       ${a.role ? `<div class="role">${esc(a.role)}</div>` : ''}
+      ${isLead && a.pendingQuestion ? renderAsk(a.pendingQuestion) : ''}
       <div class="feed">${(a.events || []).map(renderEvent).join('') ||
         '<span class="ev">henüz etkinlik yok</span>'}</div>
+      ${isLead ? `<div class="leadchat">
+        <div class="lbl">💬 Lidere doğrudan mesaj:</div>
+        <form onsubmit="sendLeadMsg(event)">
+          <input id="leadMsgIn" placeholder="lidere yaz… (soru, yönlendirme, onay)" autocomplete="off" />
+          <button type="submit">Gönder</button>
+        </form></div>` : ''}
     </div>`;
   }).join('') || '<div class="empty">Ekipte üye görünmüyor.</div>';
+
+  // Taslak metni ve odağı geri yükle
+  const li = document.getElementById('leadMsgIn');
+  if (li && leadDraft) li.value = leadDraft;
+  if (li && leadFocused) { li.focus(); li.selectionStart = li.selectionEnd = li.value.length; }
 
   $('messages').innerHTML = (s.messages || []).slice().reverse().map(m => `
     <div class="m"><span class="who">${esc(m.from)} → ${esc(m.to)}</span>
@@ -318,6 +350,38 @@ async function editAgent(key, current) {
 async function removeAgent(name) {
   if (!confirm(`"${name}" ekipten çıkarılsın mı? (Lidere direktif iletilir)`)) return;
   await trySend(() => backend.control('remove', name, ''), '✓ Çıkarma direktifi lidere iletildi');
+}
+
+// Liderin bekleyen sorusu — panelde tıklanabilir seçenekler
+function renderAsk(pq) {
+  return pq.questions.map((q, qi) => {
+    const opts = (q.options || []).map((o, oi) => `
+      <button class="opt" onclick="answerLead('${esc(pq.id)}',${oi})">
+        ${esc(o.label)}${o.description ? `<br><span class="d">${esc(o.description)}</span>` : ''}
+      </button>`).join('');
+    return `<div class="ask"><span class="q">❓ ${esc(q.question)}</span>${opts}</div>`;
+  }).join('');
+}
+
+let answering = false;
+async function answerLead(id, index) {
+  if (answering) return;
+  answering = true;
+  await trySend(() => backend.leadAnswer(id, index), '✓ Yanıt lidere iletildi');
+  setTimeout(() => { answering = false; }, 1500);
+  tick();
+}
+
+async function sendLeadMsg(ev) {
+  ev.preventDefault();
+  const inp = ev.target.querySelector('input');
+  const text = inp.value.trim();
+  if (!text) return;
+  const btn = ev.target.querySelector('button');
+  btn.disabled = true;
+  const ok = await trySend(() => backend.leadMsg(text), '✓ Lidere iletildi');
+  if (ok) inp.value = '';
+  btn.disabled = false;
 }
 
 async function switchProject(name) {
