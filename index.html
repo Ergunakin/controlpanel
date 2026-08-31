@@ -136,15 +136,15 @@ async function rpc(fn, args) {
                Authorization: `Bearer ${CFG.anonKey}` },
     body: JSON.stringify(args),
   });
+  const body = await res.text();
   if (!res.ok) {
-    const body = await res.text();
     if (res.status === 400 && body.includes('unauthorized')) {
       try { localStorage.removeItem('panelToken'); } catch {}
       throw new Error('token');
     }
     throw new Error('rpc ' + res.status);
   }
-  return res.json();
+  return body ? JSON.parse(body) : null; // command_add gibi void fonksiyonlar boş gövde döndürür
 }
 
 const post = (url, body) => fetch(url, { method: 'POST',
