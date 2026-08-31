@@ -112,7 +112,8 @@ function getLeadPendingFromTmux() {
     screen = execFileSync('tmux', ['capture-pane', '-t', LEAD_TMUX0, '-p', '-S', '-80'],
       { timeout: 5000 }).toString();
   } catch { return null; }
-  if (!/Enter to select/.test(screen) || !/to navigate/.test(screen)) return null;
+  // Seçici açık mı? Footer sarabildiği için tek güvenilir imza "Enter to select".
+  if (!/Enter to select/.test(screen)) return null;
   const lines = screen.split('\n');
   const optRe = /^\s*❯?\s*(\d+)\.\s+(.+?)\s*$/;
   const opts = [];
