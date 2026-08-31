@@ -25,6 +25,8 @@ const QUEUE_FILE = path.join(DATA_DIR, 'task-queue.md');
 const META_FILE = path.join(DATA_DIR, 'agents.json');
 const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json'); // { active, projects: { ad: {path, repo, url, status} } }
 const WORK_DIR = process.env.MC_WORK || path.join(HOME, 'work'); // projelerin ana klasörü
+// Bir işçi agent bu süre boyunca hareketsiz kalırsa (kapandı/bitti sayılır) panosu düşer.
+const WORKER_TTL_MS = Number(process.env.MC_WORKER_TTL_MS || 240_000); // 4 dk
 
 // ---------- yardımcılar ----------
 const safe = (fn, fallback) => { try { return fn(); } catch { return fallback; } };
@@ -248,14 +250,19 @@ function collectState() {
         safe(() => tailLines(c.p, 64 * 1024).slice(0, 40).join('\n').includes(`"${a.name}"`), false));
       if (hit) { a.file = hit.p; used.add(hit.p); }
     }
-    // 4) Eşleşmeyen ama ekip başladıktan sonra AÇILMIŞ oturumlar da birer pano olsun
-    for (const c of bornAfter.filter(c => !used.has(c.p)).slice(0, 8)) {
+    // 4) Otonom işçi panoları — ekip başladıktan sonra açılmış alt-agent oturumları.
+    //    KAPANAN işçi: dosyası silinir (zaten listeye girmez) ya da bayatlar; bir süre
+    //    hareketsiz kalan işçiyi "kapandı" sayıp panosunu düşürüyoruz (lider hariç).
+    const liveWorkers = bornAfter.filter(c => !used.has(c.p) && now - c.mt < WORKER_TTL_MS);
+    for (const c of liveWorkers.sort((a, b) => b.mt - a.mt).slice(0, 8)) {
       const stem = path.basename(c.f, '.jsonl');
+      // isim önce dosya adından: agent-a<isim>-<16hex> → <isim>
+      const fromFile = stem.match(/^agent-a(.+)-[0-9a-f]{16}$/);
       const id = stem.startsWith('agent-') ? stem.slice(6) : stem;
-      const auto = autoNames[id];
+      const name = (fromFile && fromFile[1]) || autoNames[id] || (stem.slice(0, 12) + '…');
       agents.push({
-        name: auto || stem.slice(0, 12) + '…',
-        type: auto ? 'alt-agent' : 'eşleşmemiş oturum',
+        name,
+        type: (fromFile || autoNames[id]) ? 'alt-agent' : 'eşleşmemiş oturum',
         ids: [], file: c.p, key: stem,
       });
     }
