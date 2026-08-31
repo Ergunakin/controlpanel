@@ -24,6 +24,8 @@ const DATA_DIR = process.env.MC_DATA || path.join(HOME, 'agent-mission-control')
 const QUEUE_FILE = path.join(DATA_DIR, 'task-queue.md');
 const META_FILE = path.join(DATA_DIR, 'agents.json');
 const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json'); // { active, projects: { ad: {path, repo, url, status} } }
+const ASK_FILE = path.join(DATA_DIR, 'ask.json');       // lider soruları buraya yazar (panel formu)
+const ANSWER_FILE = path.join(DATA_DIR, 'answer.json'); // panel yanıtları buraya; lider bekler
 const WORK_DIR = process.env.MC_WORK || path.join(HOME, 'work'); // projelerin ana klasörü
 // Bir işçi agent bu süre boyunca hareketsiz kalırsa (kapandı/bitti sayılır) panosu düşer.
 const WORKER_TTL_MS = Number(process.env.MC_WORKER_TTL_MS || 240_000); // 4 dk
@@ -240,6 +242,7 @@ function collectState() {
     queue: safe(() => fs.readFileSync(QUEUE_FILE, 'utf8'), ''),
     projectsInfo: readJSON(PROJECTS_FILE) || { active: null, projects: {} },
     ghRepos,
+    ask: readJSON(ASK_FILE) || null, // panelin göstereceği çok-sorulu form (varsa)
   };
   const now = Date.now();
 
@@ -445,7 +448,18 @@ const COMMAND_HANDLERS = {
   'refresh-repos': () => refreshGhRepos(),
   'lead-msg': (p) => doLeadMsg(p.text),
   'lead-answer': (p) => doLeadAnswer(p.index),
+  'form-answer': (p) => doFormAnswer(p.id, p.answers),
 };
+
+// Panel formu yanıtı: ask.json'daki id ile eşleşirse answer.json yaz, ask.json'u sil.
+// Lider answer.json'u bekliyor.
+function doFormAnswer(id, answers) {
+  const ask = readJSON(ASK_FILE);
+  if (!ask || String(ask.id) !== String(id)) return false;
+  fs.writeFileSync(ANSWER_FILE, JSON.stringify({ id, answers, answeredAt: new Date().toISOString() }, null, 2));
+  try { fs.unlinkSync(ASK_FILE); } catch {}
+  return true;
+}
 
 function applyCommand(payload) {
   if (!payload || typeof payload !== 'object') return;
@@ -495,6 +509,7 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/refresh-repos' && req.method === 'POST') { refreshGhRepos(); return json({ ok: true }); }
   if (req.url === '/api/lead-msg' && req.method === 'POST') return readBody(j => json({ ok: doLeadMsg(j.text) }));
   if (req.url === '/api/lead-answer' && req.method === 'POST') return readBody(j => json({ ok: doLeadAnswer(j.index) }));
+  if (req.url === '/api/form-answer' && req.method === 'POST') return readBody(j => json({ ok: doFormAnswer(j.id, j.answers) }));
   if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(path.join(REPO, 'index.html')));
