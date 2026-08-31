@@ -37,7 +37,8 @@ safe(() => {
     if (m) ENV[m[1]] = m[2];
   }
 }, null);
-const SYNC_ON = Boolean(ENV.SUPABASE_URL && ENV.SUPABASE_ANON_KEY && ENV.PANEL_TOKEN);
+// Fixture (test) modunda bulut eşitleme kapalı — test verisi canlı paneli ezmesin.
+const SYNC_ON = !FIXTURE && Boolean(ENV.SUPABASE_URL && ENV.SUPABASE_ANON_KEY && ENV.PANEL_TOKEN);
 
 function firstTs(file) {
   return safe(() => {

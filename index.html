@@ -46,8 +46,9 @@
   .task { font-size:12px; border-left:3px solid var(--accent); padding-left:8px; color:var(--dim); }
   .task b { color:var(--text); }
   form { display:flex; flex-direction:column; gap:8px; padding:10px 12px; }
-  input, textarea, button { font:inherit; background:var(--bg); color:var(--text);
+  input, textarea, select, button { font:inherit; background:var(--bg); color:var(--text);
     border:1px solid var(--border); border-radius:6px; padding:7px 9px; }
+  button:disabled { opacity:.5; cursor:wait; }
   textarea { resize:vertical; min-height:60px; }
   button { background:var(--accent); color:#04182e; font-weight:700; cursor:pointer; border:none; }
   button:active { opacity:.8; }
@@ -102,7 +103,7 @@
     <div class="card">
       <h3>➕ Görev Ver</h3>
       <form id="assignForm">
-        <input id="agentIn" placeholder="hedef agent (örn: lider)" />
+        <select id="agentIn"><option value="lider">lider</option></select>
         <textarea id="textIn" placeholder="görev tanımı…"></textarea>
         <button type="submit">Kuyruğa Ekle</button>
       </form>
@@ -233,6 +234,19 @@ async function tick() {
     return `<div class="task"><b>${esc(title)}</b>${esc(st)}${owner ? ' · @' + esc(owner) : ''}</div>`;
   }).join('') || '<span class="ev">görev yok</span>';
 
+  // Görev hedefi combobox'ını aktif agentlarla doldur (seçim korunur)
+  const sel = $('agentIn');
+  const current = sel.value;
+  const names = [...new Set(team.agents
+    .filter(a => a.type !== 'eşleşmemiş oturum')
+    .map(a => a.alias || a.name))];
+  sel.innerHTML = names.map(n => {
+    const value = n === 'team-lead' ? 'lider' : n;
+    const label = n === 'team-lead' ? 'lider (team-lead)' : n;
+    return `<option value="${esc(value)}">${esc(label)}</option>`;
+  }).join('') || '<option value="lider">lider</option>';
+  if ([...sel.options].some(o => o.value === current)) sel.value = current;
+
   document.querySelectorAll('.feed').forEach(f => { f.scrollTop = f.scrollHeight; });
 }
 
@@ -255,22 +269,33 @@ async function removeAgent(name) {
   await trySend(() => backend.control('remove', name, ''), '✓ Çıkarma direktifi lidere iletildi');
 }
 
-$('newAgentForm').addEventListener('submit', async (ev) => {
+// Gönderim sırasında formun butonunu kilitle → yanlışlıkla çift gönderim olmaz
+async function submitLocked(form, fn) {
+  const btn = form.querySelector('button');
+  btn.disabled = true;
+  try { return await fn(); } finally { btn.disabled = false; }
+}
+
+$('newAgentForm').addEventListener('submit', (ev) => {
   ev.preventDefault();
-  const name = $('naName').value.trim();
-  if (!name) return;
-  const ok = await trySend(() => backend.control('add', name, $('naRole').value.trim()),
-    `✓ "${name}" isteği lidere iletildi — kurulunca panelde belirecek`);
-  if (ok) { $('naName').value = ''; $('naRole').value = ''; }
+  submitLocked(ev.target, async () => {
+    const name = $('naName').value.trim();
+    if (!name) return;
+    const ok = await trySend(() => backend.control('add', name, $('naRole').value.trim()),
+      `✓ "${name}" isteği lidere iletildi — kurulunca panelde belirecek`);
+    if (ok) { $('naName').value = ''; $('naRole').value = ''; }
+  });
 });
 
-$('assignForm').addEventListener('submit', async (ev) => {
+$('assignForm').addEventListener('submit', (ev) => {
   ev.preventDefault();
-  const text = $('textIn').value.trim();
-  if (!text) return;
-  const ok = await trySend(() => backend.assign($('agentIn').value.trim() || 'lider', text),
-    '✓ Görev kuyruğa eklendi');
-  if (ok) $('textIn').value = '';
+  submitLocked(ev.target, async () => {
+    const text = $('textIn').value.trim();
+    if (!text) return;
+    const ok = await trySend(() => backend.assign($('agentIn').value || 'lider', text),
+      '✓ Görev kuyruğa eklendi');
+    if (ok) { $('textIn').value = ''; $('agentIn').selectedIndex = 0; }
+  });
 });
 
 tick();
