@@ -8,7 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 
 const PORT = Number(process.env.MC_PORT || 5757);
 const HOME = os.homedir();
@@ -103,7 +103,53 @@ function extractAgentNames(file) {
   return nameById;
 }
 
-// Liderin henüz yanıtlanmamış AskUserQuestion çağrısını bul (panelden yanıtlamak için)
+// ÖNEMLİ: Bekleyen AskUserQuestion transcript'e yazılmaz; sadece yanıtlanınca yazılır.
+// Bu yüzden CANLI bekleyen soruyu liderin tmux EKRANINDAN okuyoruz.
+const LEAD_TMUX0 = process.env.MC_LEAD_TMUX || 'lead';
+function getLeadPendingFromTmux() {
+  let screen;
+  try {
+    screen = execFileSync('tmux', ['capture-pane', '-t', LEAD_TMUX0, '-p', '-S', '-80'],
+      { timeout: 5000 }).toString();
+  } catch { return null; }
+  if (!/Enter to select/.test(screen) || !/to navigate/.test(screen)) return null;
+  const lines = screen.split('\n');
+  const optRe = /^\s*❯?\s*(\d+)\.\s+(.+?)\s*$/;
+  const opts = [];
+  let firstOpt = -1;
+  lines.forEach((ln, i) => {
+    const m = ln.match(optRe);
+    if (m) { if (firstOpt < 0) firstOpt = i; opts.push({ label: m[2], line: i }); }
+  });
+  if (!opts.length) return null;
+  // Soru metni: ilk seçeneğin hemen üstündeki boş olmayan satırlar
+  const qlines = [];
+  for (let i = firstOpt - 1; i >= 0 && qlines.length < 5; i--) {
+    const t = lines[i].trim();
+    if (/Enter to select|to navigate|Esc to cancel|^─+$/.test(t)) continue;
+    if (!t) { if (qlines.length) break; else continue; }
+    qlines.unshift(t);
+  }
+  // Her seçeneğin açıklaması: kendi satırından sonraki girintili devam satırları
+  opts.forEach((o, k) => {
+    const end = k + 1 < opts.length ? opts[k + 1].line : lines.length;
+    const desc = [];
+    for (let i = o.line + 1; i < end; i++) {
+      const t = lines[i].trim();
+      if (!t || /Enter to select|to navigate|^─+$/.test(t)) break;
+      desc.push(t);
+    }
+    o.description = desc.join(' ').slice(0, 200);
+    o.index = k; // ekrandaki sıra = ok tuşu sayısı
+  });
+  const options = opts
+    .filter(o => !/^Type something\.?$/i.test(o.label) && !/^Chat about this\.?$/i.test(o.label))
+    .map(o => ({ label: o.label, description: o.description, index: o.index }));
+  if (!options.length) return null;
+  return { source: 'tmux', questions: [{ question: qlines.join(' ').slice(0, 400), header: '', options }] };
+}
+
+// (Yedek) Transcript'ten yanıtlanmamış AskUserQuestion — fixture testleri için
 function scanPendingQuestion(file) {
   const asks = {}, answered = new Set();
   for (const line of tailLines(file, 4 * 1024 * 1024)) { // büyük transcriptlerde de soruyu kaçırma
@@ -281,8 +327,9 @@ function collectState() {
         a.lastActivity = mtime(a.file);
         a.status = now - a.lastActivity < 20_000 ? 'calisiyor' : 'bekliyor';
         if (a.type === 'team-lead') {
-          a.pendingQuestion = scanPendingQuestion(a.file);
-          lastLeadFile = a.file; // lead-answer doğrulaması için
+          // Canlı soru tmux ekranından; yoksa transcript yedeği (fixture)
+          a.pendingQuestion = getLeadPendingFromTmux() || scanPendingQuestion(a.file);
+          lastLeadFile = a.file;
         }
       } else {
         a.status = 'transcript-yok';
@@ -380,11 +427,10 @@ function doLeadMsg(text) {
   return true;
 }
 
-function doLeadAnswer(toolUseId, optionIndex) {
-  optionIndex = Math.max(0, Math.min(10, Number(optionIndex) || 0));
-  // Soru hâlâ açık mı? Kapandıysa tuş göndermek liderin yazı kutusuna karışır — gönderme.
-  const pending = lastLeadFile ? scanPendingQuestion(lastLeadFile) : null;
-  if (!pending || pending.id !== toolUseId) return false;
+function doLeadAnswer(optionIndex) {
+  optionIndex = Math.max(0, Math.min(15, Number(optionIndex) || 0));
+  // Ekranda gerçekten bir soru duruyor mu? Yoksa ok/Enter liderin yazı kutusuna karışır.
+  if (!getLeadPendingFromTmux()) return false;
   const keys = Array(optionIndex).fill('Down').concat(['Enter']);
   tmuxKeys(keys);
   return true;
@@ -397,7 +443,7 @@ const COMMAND_HANDLERS = {
   'project': (p) => doProject(p.action, p.name, p.repo),
   'refresh-repos': () => refreshGhRepos(),
   'lead-msg': (p) => doLeadMsg(p.text),
-  'lead-answer': (p) => doLeadAnswer(p.id, p.index),
+  'lead-answer': (p) => doLeadAnswer(p.index),
 };
 
 function applyCommand(payload) {
@@ -447,7 +493,7 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/project' && req.method === 'POST') return readBody(j => json({ ok: doProject(j.action, j.name, j.repo) }));
   if (req.url === '/api/refresh-repos' && req.method === 'POST') { refreshGhRepos(); return json({ ok: true }); }
   if (req.url === '/api/lead-msg' && req.method === 'POST') return readBody(j => json({ ok: doLeadMsg(j.text) }));
-  if (req.url === '/api/lead-answer' && req.method === 'POST') return readBody(j => json({ ok: doLeadAnswer(j.id, j.index) }));
+  if (req.url === '/api/lead-answer' && req.method === 'POST') return readBody(j => json({ ok: doLeadAnswer(j.index) }));
   if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(path.join(REPO, 'index.html')));

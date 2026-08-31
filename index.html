@@ -216,7 +216,7 @@ const backend = IS_LOCAL ? {
   project: (action, name, repo) => post('/api/project', { action, name, repo }),
   refreshRepos: () => post('/api/refresh-repos', {}),
   leadMsg: (text) => post('/api/lead-msg', { text }),
-  leadAnswer: (id, index) => post('/api/lead-answer', { id, index }),
+  leadAnswer: (index) => post('/api/lead-answer', { index }),
 } : {
   state: () => rpc('state_get', { p_token: getToken() }),
   assign: (agent, text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'assign', agent, text } }),
@@ -225,7 +225,7 @@ const backend = IS_LOCAL ? {
   project: (action, name, repo) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'project', action, name, repo } }),
   refreshRepos: () => rpc('command_add', { p_token: getToken(), p_payload: { type: 'refresh-repos' } }),
   leadMsg: (text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'lead-msg', text } }),
-  leadAnswer: (id, index) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'lead-answer', id, index } }),
+  leadAnswer: (index) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'lead-answer', index } }),
 };
 $('mode').textContent = IS_LOCAL ? '(yerel)' : '(web)';
 
@@ -400,20 +400,22 @@ async function removeAgent(name) {
 
 // Liderin bekleyen sorusu — panelde tıklanabilir seçenekler
 function renderAsk(pq) {
-  return pq.questions.map((q, qi) => {
-    const opts = (q.options || []).map((o, oi) => `
-      <button class="opt" onclick="answerLead('${esc(pq.id)}',${oi})">
+  return pq.questions.map((q) => {
+    const opts = (q.options || []).map((o, oi) => {
+      const idx = (o.index != null) ? o.index : oi; // ekrandaki sıra
+      return `<button class="opt" onclick="answerLead(${idx})">
         ${esc(o.label)}${o.description ? `<br><span class="d">${esc(o.description)}</span>` : ''}
-      </button>`).join('');
+      </button>`;
+    }).join('');
     return `<div class="ask"><span class="q">❓ ${esc(q.question)}</span>${opts}</div>`;
   }).join('');
 }
 
 let answering = false;
-async function answerLead(id, index) {
+async function answerLead(index) {
   if (answering) return;
   answering = true;
-  await trySend(() => backend.leadAnswer(id, index), '✓ Yanıt lidere iletildi');
+  await trySend(() => backend.leadAnswer(index), '✓ Yanıt lidere iletildi');
   setTimeout(() => { answering = false; }, 1500);
   tick();
 }
