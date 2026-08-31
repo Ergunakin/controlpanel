@@ -70,6 +70,7 @@
 <header>
   <h1>🛰 Agent Mission Control</h1>
   <span class="team" id="teamName">ekip bekleniyor…</span>
+  <span class="team" id="activeProj" style="color:var(--ok)"></span>
   <span class="mode" id="mode"></span>
   <span class="time" id="clock"></span>
 </header>
@@ -86,6 +87,15 @@
     <div class="card">
       <h3>🗂 Görev Panosu</h3>
       <div class="body" id="tasks"><span class="ev">görev yok</span></div>
+    </div>
+    <div class="card">
+      <h3>📁 Projeler</h3>
+      <div class="body" id="projects"><span class="ev">henüz proje yok</span></div>
+      <form id="projForm">
+        <input id="projName" placeholder="yeni proje adı (küçük harf, tire)" pattern="[a-z0-9-]+" />
+        <button type="submit">Proje Kur ve Deploy Et</button>
+      </form>
+      <div class="hint">Lider: klasör + GitHub reposu + Vercel projesi kurar, deploy eder ve adresi buraya düşürür.</div>
     </div>
     <div class="card">
       <h3>⏳ Bekleyen Direktifler</h3>
@@ -157,11 +167,13 @@ const backend = IS_LOCAL ? {
   assign: (agent, text) => post('/api/assign', { agent, text }),
   meta: (key, alias, role) => post('/api/agent-meta', { key, alias, role }),
   control: (action, name, role) => post('/api/team-control', { action, name, role }),
+  project: (action, name) => post('/api/project', { action, name }),
 } : {
   state: () => rpc('state_get', { p_token: getToken() }),
   assign: (agent, text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'assign', agent, text } }),
   meta: (key, alias, role) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'agent-meta', key, alias, role } }),
   control: (action, name, role) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'team-control', action, name, role } }),
+  project: (action, name) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'project', action, name } }),
 };
 $('mode').textContent = IS_LOCAL ? '(yerel)' : '(web)';
 
@@ -234,6 +246,21 @@ async function tick() {
     return `<div class="task"><b>${esc(title)}</b>${esc(st)}${owner ? ' · @' + esc(owner) : ''}</div>`;
   }).join('') || '<span class="ev">görev yok</span>';
 
+  // Projeler
+  const pi = s.projectsInfo || { active: null, projects: {} };
+  $('activeProj').textContent = pi.active ? `📁 ${pi.active}` : '';
+  const pNames = Object.keys(pi.projects);
+  $('projects').innerHTML = pNames.map(n => {
+    const p = pi.projects[n];
+    const isActive = n === pi.active;
+    const st = p.status === 'hazır' ? '🟢' : (p.status === 'hata' ? '🔴' : '🟡');
+    return `<div class="task" style="border-left-color:${isActive ? 'var(--ok)' : 'var(--border)'}">
+      <b>${isActive ? '● ' : ''}${esc(n)}</b> ${st} ${esc(p.status || '')}
+      ${p.url ? ` · <a href="${esc(p.url)}" target="_blank" style="color:var(--accent)">${esc(p.url.replace('https://',''))}</a>` : ''}
+      ${!isActive ? ` · <a href="#" onclick="switchProject('${esc(n)}');return false" style="color:var(--warn)">geç →</a>` : ''}
+    </div>`;
+  }).join('') || '<span class="ev">henüz proje yok</span>';
+
   // Görev hedefi combobox'ını aktif agentlarla doldur (seçim korunur)
   const sel = $('agentIn');
   const current = sel.value;
@@ -269,6 +296,11 @@ async function removeAgent(name) {
   await trySend(() => backend.control('remove', name, ''), '✓ Çıkarma direktifi lidere iletildi');
 }
 
+async function switchProject(name) {
+  await trySend(() => backend.project('switch', name), `✓ Aktif proje: ${name}`);
+  tick();
+}
+
 // Gönderim sırasında formun butonunu kilitle → yanlışlıkla çift gönderim olmaz
 async function submitLocked(form, fn) {
   const btn = form.querySelector('button');
@@ -284,6 +316,17 @@ $('newAgentForm').addEventListener('submit', (ev) => {
     const ok = await trySend(() => backend.control('add', name, $('naRole').value.trim()),
       `✓ "${name}" isteği lidere iletildi — kurulunca panelde belirecek`);
     if (ok) { $('naName').value = ''; $('naRole').value = ''; }
+  });
+});
+
+$('projForm').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  submitLocked(ev.target, async () => {
+    const name = $('projName').value.trim().toLowerCase();
+    if (!name || !/^[a-z0-9-]+$/.test(name)) { toast('Proje adı: sadece küçük harf, rakam, tire', true); return; }
+    const ok = await trySend(() => backend.project('create', name),
+      `✓ "${name}" kurulumu lidere iletildi — deploy bitince adresi burada görünecek`);
+    if (ok) $('projName').value = '';
   });
 });
 

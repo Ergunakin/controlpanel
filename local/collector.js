@@ -22,6 +22,8 @@ const PROJECTS_ROOT = FIXTURE ? path.join(FIXTURE, 'projects') : path.join(HOME,
 const DATA_DIR = process.env.MC_DATA || path.join(HOME, 'agent-mission-control');
 const QUEUE_FILE = path.join(DATA_DIR, 'task-queue.md');
 const META_FILE = path.join(DATA_DIR, 'agents.json');
+const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json'); // { active, projects: { ad: {path, repo, url, status} } }
+const WORK_DIR = process.env.MC_WORK || path.join(HOME, 'work'); // projelerin ana klasörü
 
 // ---------- yardımcılar ----------
 const safe = (fn, fallback) => { try { return fn(); } catch { return fallback; } };
@@ -143,7 +145,11 @@ function parseLine(line, agentName, events, messages) {
 }
 
 function collectState() {
-  const state = { generatedAt: new Date().toISOString(), teams: [], messages: [], queue: safe(() => fs.readFileSync(QUEUE_FILE, 'utf8'), '') };
+  const state = {
+    generatedAt: new Date().toISOString(), teams: [], messages: [],
+    queue: safe(() => fs.readFileSync(QUEUE_FILE, 'utf8'), ''),
+    projectsInfo: readJSON(PROJECTS_FILE) || { active: null, projects: {} },
+  };
   const now = Date.now();
 
   for (const teamName of listDir(TEAMS_ROOT)) {
@@ -273,11 +279,36 @@ function doControl(action, name, role) {
   return Boolean(line);
 }
 
+function doProject(action, name) {
+  name = String(name || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
+  if (!name) return false;
+  const reg = readJSON(PROJECTS_FILE) || { active: null, projects: {} };
+  const now = new Date().toISOString();
+  if (action === 'switch') {
+    if (!reg.projects[name]) return false;
+    reg.active = name;
+    fs.writeFileSync(PROJECTS_FILE, JSON.stringify(reg, null, 2));
+    fs.appendFileSync(QUEUE_FILE,
+      `- [ ] (${now}) **lider** için: AKTİF PROJE DEĞİŞTİ — artık "${name}" (${WORK_DIR}/${name}). Bundan sonraki görevler bu klasörde çalışır; ekibe duyur ve bu satırı [x] yap.\n`);
+    return true;
+  }
+  if (action === 'create') {
+    if (reg.projects[name]) return false;
+    reg.projects[name] = { path: `${WORK_DIR}/${name}`, repo: '', url: '', status: 'kuruluyor', createdAt: now };
+    fs.writeFileSync(PROJECTS_FILE, JSON.stringify(reg, null, 2));
+    fs.appendFileSync(QUEUE_FILE,
+      `- [ ] (${now}) **lider** için: YENİ PROJE OLUŞTUR — adı "${name}". Adımlar: 1) ${WORK_DIR}/${name} klasörünü aç, git init + anlamlı bir ilk commit. 2) \`gh repo create ${name} --private --source=. --push\` ile GitHub reposunu aç. 3) Vercel'e bağla ve production deploy et: klasör içinde \`vercel link --yes --project ${name}\` sonra \`vercel --prod --yes\`; çıkan production URL'ini al. 4) ${PROJECTS_FILE} dosyasındaki projects["${name}"] kaydını güncelle: repo ve url alanlarını doldur, status "hazır" yap, active alanını "${name}" yap. 5) Bu satırı [x] yapıp sonuna URL'i yaz. Hata olursa status "hata" yap ve satıra nedeni not et.\n`);
+    return true;
+  }
+  return false;
+}
+
 function applyCommand(payload) {
   if (!payload || typeof payload !== 'object') return;
   if (payload.type === 'assign') doAssign(payload.agent, payload.text);
   else if (payload.type === 'agent-meta') doMeta(payload.key, payload.alias, payload.role);
   else if (payload.type === 'team-control') doControl(payload.action, payload.name, payload.role);
+  else if (payload.type === 'project') doProject(payload.action, payload.name);
 }
 
 // ---------- Supabase eşitleme ----------
@@ -318,6 +349,7 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/assign' && req.method === 'POST') return readBody(j => json({ ok: doAssign(j.agent, j.text) }));
   if (req.url === '/api/agent-meta' && req.method === 'POST') return readBody(j => json({ ok: doMeta(j.key, j.alias, j.role) }));
   if (req.url === '/api/team-control' && req.method === 'POST') return readBody(j => json({ ok: doControl(j.action, j.name, j.role) }));
+  if (req.url === '/api/project' && req.method === 'POST') return readBody(j => json({ ok: doProject(j.action, j.name) }));
   if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(path.join(REPO, 'index.html')));
