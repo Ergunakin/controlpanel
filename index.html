@@ -33,8 +33,9 @@
   .ask .opt:hover { background:var(--warn); color:#2b1d00; }
   .ask .opt .d { color:var(--dim); font-size:11px; } .ask .opt:hover .d { color:#3d2b00; }
   .leadchat { border-top:1px solid var(--border); padding:8px 12px; }
-  .leadchat form { flex-direction:row; padding:0; gap:6px; }
-  .leadchat input { flex:1; }
+  .leadchat form { flex-direction:row; align-items:flex-end; padding:0; gap:6px; }
+  .leadchat textarea { flex:1; min-height:auto; resize:none; overflow-y:auto;
+    max-height:220px; line-height:1.45; }
   .leadchat button { padding:7px 12px; white-space:nowrap; }
   .leadchat .lbl { font-size:11px; color:var(--dim); margin-bottom:6px; }
   .leadchat button.mic { padding:7px 10px; background:var(--border); color:var(--text); }
@@ -301,7 +302,8 @@ async function tick() {
         <div class="lbl">💬 Lidere doğrudan mesaj (🎤 ile konuş):</div>
         <form onsubmit="sendLeadMsg(event)">
           <button type="button" id="micBtn" class="mic" onclick="toggleDictation()" title="konuş">🎤</button>
-          <input id="leadMsgIn" placeholder="lidere yaz ya da 🎤 ile konuş…" autocomplete="off" />
+          <textarea id="leadMsgIn" rows="1" placeholder="lidere yaz ya da 🎤 ile konuş…" autocomplete="off"
+            oninput="autoGrow(this)" onkeydown="leadKey(event)"></textarea>
           <button type="submit">Gönder</button>
         </form></div>` : ''}
     </div>`;
@@ -309,7 +311,7 @@ async function tick() {
 
   // Taslak metni ve odağı geri yükle
   const li = document.getElementById('leadMsgIn');
-  if (li && leadDraft) li.value = leadDraft;
+  if (li && leadDraft) { li.value = leadDraft; autoGrow(li); }
   if (li && leadFocused) { li.focus(); li.selectionStart = li.selectionEnd = li.value.length; }
   updateMic(); // yeniden çizimde mikrofon kayıt durumunu koru
 
@@ -399,6 +401,17 @@ async function answerLead(id, index) {
   tick();
 }
 
+// Mesaj kutusu içeriğe göre aşağıya büyüsün (uzun cümlenin tamamı görünsün)
+function autoGrow(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+}
+// Enter gönderir, Shift+Enter yeni satır
+function leadKey(ev) {
+  if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); ev.target.form.requestSubmit(); }
+}
+
 // Sesli giriş — tarayıcının konuşma tanıması metni chat kutusuna yazar; kullanıcı Gönder'e basar
 let recog = null, recognizing = false, dictBase = '';
 function updateMic() {
@@ -423,7 +436,7 @@ function toggleDictation() {
     }
     if (finalTxt) dictBase += finalTxt;
     const inp = document.getElementById('leadMsgIn');
-    if (inp) inp.value = (dictBase + interim).replace(/\s+/g, ' ').trimStart();
+    if (inp) { inp.value = (dictBase + interim).replace(/\s+/g, ' ').trimStart(); autoGrow(inp); }
   };
   recog.onend = () => { recognizing = false; updateMic(); };
   recog.onerror = (e) => {
@@ -445,7 +458,7 @@ async function sendLeadMsg(ev) {
   const btn = ev.target.querySelector('button');
   btn.disabled = true;
   const ok = await trySend(() => backend.leadMsg(text), '✓ Lidere iletildi');
-  if (ok) { inp.value = ''; dictBase = ''; if (recognizing) { try { recog.stop(); } catch {} } }
+  if (ok) { inp.value = ''; dictBase = ''; autoGrow(inp); if (recognizing) { try { recog.stop(); } catch {} } }
   btn.disabled = false;
 }
 
