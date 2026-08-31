@@ -106,7 +106,7 @@ function extractAgentNames(file) {
 // Liderin henüz yanıtlanmamış AskUserQuestion çağrısını bul (panelden yanıtlamak için)
 function scanPendingQuestion(file) {
   const asks = {}, answered = new Set();
-  for (const line of tailLines(file)) {
+  for (const line of tailLines(file, 4 * 1024 * 1024)) { // büyük transcriptlerde de soruyu kaçırma
     const obj = safe(() => JSON.parse(line), null);
     if (!obj || !obj.message) continue;
     const content = Array.isArray(obj.message.content) ? obj.message.content : [];

@@ -79,6 +79,10 @@
     display:flex; gap:8px; align-items:baseline; }
   .item:hover { background:var(--bg); }
   .item .sub { color:var(--dim); font-size:11px; margin-left:auto; }
+  #askBanner:not(:empty) { position:sticky; top:0; z-index:7; background:#3d2b00;
+    border-bottom:2px solid var(--warn); padding:10px 16px; box-shadow:0 4px 16px rgba(0,0,0,.5); }
+  #askBanner .bhead { color:#ffd479; font-weight:700; font-size:13px; margin-bottom:6px; }
+  #askBanner .ask { background:transparent; border:0; padding:0; }
   #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
     background:var(--ok); color:#04200d; font-weight:700; padding:10px 18px; border-radius:8px;
     opacity:0; transition:opacity .3s; pointer-events:none; z-index:9; }
@@ -107,6 +111,7 @@
   <span class="time" id="clock"></span>
 </header>
 <div id="stale">⚠️ Mac ile bağlantı kopuk görünüyor — veri eski. Toplayıcının çalıştığından emin ol: <code>node local/collector.js</code></div>
+<div id="askBanner"></div>
 <div id="toast"></div>
 <div id="modalBg" onclick="closeProjModal()"></div>
 <div id="projModal">
@@ -330,6 +335,18 @@ async function tick() {
 
   lastState = s;
   if (modalOpen) renderModal(s);
+
+  // Bekleyen soru — panelin en üstünde kaçırılamaz banda çıkar, sekme başlığı yanıp söner
+  const asker = team.agents.find(a => a.pendingQuestion);
+  const banner = $('askBanner');
+  if (asker) {
+    banner.innerHTML = `<div class="bhead">❓ ${esc(asker.alias || asker.name)} yanıtını bekliyor:</div>` +
+      renderAsk(asker.pendingQuestion);
+    document.title = '❓ Soru bekliyor — Mission Control';
+  } else {
+    banner.innerHTML = '';
+    document.title = 'Agent Mission Control';
+  }
 
   // Projeler
   const pi = s.projectsInfo || { active: null, projects: {} };
