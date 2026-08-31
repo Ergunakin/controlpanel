@@ -85,6 +85,14 @@
     padding:6px 20px; font-size:12px; }
   .q { font-size:12px; border-left:3px solid var(--warn); padding-left:8px; color:var(--dim); }
   .q b { color:var(--text); }
+  .dir { font-size:12px; display:flex; gap:6px; align-items:baseline; padding-left:8px;
+    border-left:3px solid var(--border); }
+  .dir .di { flex:none; } .dir .dt { color:var(--text); flex:1; }
+  .dir.d-done { border-left-color:var(--ok); }
+  .dir.d-done .dt { color:var(--ok); text-decoration:line-through; text-decoration-color:rgba(63,185,80,.4); }
+  .dir.d-prog { border-left-color:var(--accent); }
+  .dir.d-prog .dt { color:var(--accent); }
+  .dir.d-wait { border-left-color:var(--warn); }
 </style>
 </head>
 <body>
@@ -128,8 +136,8 @@
       <div class="hint">Başlığa tıkla: GitHub repolarından seç veya yeni proje kur.</div>
     </div>
     <div class="card">
-      <h3>⏳ Bekleyen Direktifler</h3>
-      <div class="body" id="pending"><span class="ev">bekleyen direktif yok</span></div>
+      <h3>🗂 Direktif Akışı <span id="dirCounts" style="float:right;font-weight:normal;letter-spacing:0"></span></h3>
+      <div class="body" id="pending"><span class="ev">henüz direktif yok</span></div>
     </div>
     <div class="card">
       <h3>🤖 Yeni Agent</h3>
@@ -242,12 +250,27 @@ async function tick() {
   const ageMs = Date.now() - Date.parse(s.generatedAt);
   $('stale').style.display = (!IS_LOCAL && ageMs > 30_000) ? 'block' : 'none';
 
-  const pendingLines = String(s.queue || '').split('\n').filter(l => l.startsWith('- [ ]'));
-  $('pending').innerHTML = pendingLines.map(l => {
-    const m = l.match(/^- \[ \] \(([^)]+)\)\s*(.*)$/);
-    const text = (m ? m[2] : l.slice(5)).replace(/\*\*/g, '');
-    return `<div class="q"><b>${esc(text.slice(0, 200))}</b>${m ? ` <span class="when">${fmtT(m[1])}</span>` : ''}</div>`;
-  }).join('') || '<span class="ev">bekleyen direktif yok</span>';
+  // Direktif akışı: her satır - [x] bitti · - [~]/- [-] işlemde · - [ ] bekliyor
+  const dirs = [];
+  for (const l of String(s.queue || '').split('\n')) {
+    const m = l.match(/^- \[([ x~-])\] (?:\(([^)]+)\)\s*)?(.*)$/);
+    if (!m) continue;
+    const state = m[1] === 'x' ? 'done' : (m[1] === ' ' ? 'pending' : 'progress');
+    dirs.push({ state, ts: m[2] || '', text: m[3].replace(/\*\*/g, '') });
+  }
+  const rank = { done: 0, progress: 1, pending: 2 };
+  const icon = { done: '✅', progress: '⟳', pending: '⏳' };
+  const cls = { done: 'd-done', progress: 'd-prog', pending: 'd-wait' };
+  // bitenler en üstte (yeni→eski), sonra işlemdekiler, en altta bekleyenler
+  dirs.sort((a, b) => rank[a.state] - rank[b.state] ||
+    (a.state === 'done' ? String(b.ts).localeCompare(String(a.ts)) : String(a.ts).localeCompare(String(b.ts))));
+  const counts = dirs.reduce((o, d) => (o[d.state]++, o), { done: 0, progress: 0, pending: 0 });
+  $('dirCounts').textContent = `✅${counts.done} ⟳${counts.progress} ⏳${counts.pending}`;
+  $('pending').innerHTML = dirs.map(d =>
+    `<div class="dir ${cls[d.state]}"><span class="di">${icon[d.state]}</span>
+      <span class="dt">${esc(d.text.slice(0, 220))}</span>
+      ${d.ts ? `<span class="when">${fmtT(d.ts)}</span>` : ''}</div>`
+  ).join('') || '<span class="ev">henüz direktif yok</span>';
   const team = s.teams[0];
   if (!team) return;
   $('teamName').textContent = 'ekip: ' + team.name +
