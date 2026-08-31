@@ -8,6 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFile } = require('child_process');
 
 const PORT = Number(process.env.MC_PORT || 5757);
 const HOME = os.homedir();
@@ -144,11 +145,28 @@ function parseLine(line, agentName, events, messages) {
   }
 }
 
+// GitHub repo listesi — gh CLI varsa 5 dakikada bir tazelenir (panelin "Repoyu Getir" listesi)
+let ghRepos = [];
+function refreshGhRepos() {
+  execFile('gh', ['repo', 'list', '--limit', '100', '--json', 'name,nameWithOwner,visibility,updatedAt'],
+    { timeout: 30_000 }, (err, stdout) => {
+      if (err) return; // gh yok veya girişsiz — liste boş kalır
+      const list = safe(() => JSON.parse(stdout), null);
+      if (Array.isArray(list)) {
+        ghRepos = list
+          .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+          .map(r => ({ name: r.name, full: r.nameWithOwner, visibility: r.visibility }));
+      }
+    });
+}
+refreshGhRepos(); // açılışta bir kez; sonrası panelden istek üzerine (refresh-repos komutu)
+
 function collectState() {
   const state = {
     generatedAt: new Date().toISOString(), teams: [], messages: [],
     queue: safe(() => fs.readFileSync(QUEUE_FILE, 'utf8'), ''),
     projectsInfo: readJSON(PROJECTS_FILE) || { active: null, projects: {} },
+    ghRepos,
   };
   const now = Date.now();
 
@@ -279,9 +297,10 @@ function doControl(action, name, role) {
   return Boolean(line);
 }
 
-function doProject(action, name) {
+function doProject(action, name, repoFull) {
   name = String(name || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
   if (!name) return false;
+  repoFull = String(repoFull || '').replace(/[^A-Za-z0-9-_./]/g, '').slice(0, 120);
   const reg = readJSON(PROJECTS_FILE) || { active: null, projects: {} };
   const now = new Date().toISOString();
   if (action === 'switch') {
@@ -290,6 +309,14 @@ function doProject(action, name) {
     fs.writeFileSync(PROJECTS_FILE, JSON.stringify(reg, null, 2));
     fs.appendFileSync(QUEUE_FILE,
       `- [ ] (${now}) **lider** için: AKTİF PROJE DEĞİŞTİ — artık "${name}" (${WORK_DIR}/${name}). Bundan sonraki görevler bu klasörde çalışır; ekibe duyur ve bu satırı [x] yap.\n`);
+    return true;
+  }
+  if (action === 'import') {
+    if (!repoFull || reg.projects[name]) return false;
+    reg.projects[name] = { path: `${WORK_DIR}/${name}`, repo: `https://github.com/${repoFull}`, url: '', status: 'kuruluyor', createdAt: now };
+    fs.writeFileSync(PROJECTS_FILE, JSON.stringify(reg, null, 2));
+    fs.appendFileSync(QUEUE_FILE,
+      `- [ ] (${now}) **lider** için: GITHUB REPOSUNU PROJE OLARAK GETİR — "${repoFull}". Adımlar: 1) \`gh repo clone ${repoFull} ${WORK_DIR}/${name}\` ile klonla (klasör zaten varsa güncelle: git pull). 2) Vercel bağlantısını dene: klasör içinde \`vercel link --yes --project ${name}\`; bağlanırsa production URL'ini bul (\`vercel inspect\` veya \`vercel ls\`) — Vercel'de böyle bir proje yoksa url'i boş bırak, deploy'u ayrı bir görevle yaparız. 3) ${PROJECTS_FILE} dosyasındaki projects["${name}"] kaydını güncelle: url alanını (varsa) doldur, status "hazır", active "${name}". 4) Projeyi kısaca keşfet (ne projesi, hangi teknoloji) ve bu satırı [x] yapıp sonuna tek cümlelik özet + varsa URL yaz.\n`);
     return true;
   }
   if (action === 'create') {
@@ -308,7 +335,8 @@ function applyCommand(payload) {
   if (payload.type === 'assign') doAssign(payload.agent, payload.text);
   else if (payload.type === 'agent-meta') doMeta(payload.key, payload.alias, payload.role);
   else if (payload.type === 'team-control') doControl(payload.action, payload.name, payload.role);
-  else if (payload.type === 'project') doProject(payload.action, payload.name);
+  else if (payload.type === 'project') doProject(payload.action, payload.name, payload.repo);
+  else if (payload.type === 'refresh-repos') refreshGhRepos();
 }
 
 // ---------- Supabase eşitleme ----------
@@ -349,7 +377,8 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/assign' && req.method === 'POST') return readBody(j => json({ ok: doAssign(j.agent, j.text) }));
   if (req.url === '/api/agent-meta' && req.method === 'POST') return readBody(j => json({ ok: doMeta(j.key, j.alias, j.role) }));
   if (req.url === '/api/team-control' && req.method === 'POST') return readBody(j => json({ ok: doControl(j.action, j.name, j.role) }));
-  if (req.url === '/api/project' && req.method === 'POST') return readBody(j => json({ ok: doProject(j.action, j.name) }));
+  if (req.url === '/api/project' && req.method === 'POST') return readBody(j => json({ ok: doProject(j.action, j.name, j.repo) }));
+  if (req.url === '/api/refresh-repos' && req.method === 'POST') { refreshGhRepos(); return json({ ok: true }); }
   if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(path.join(REPO, 'index.html')));

@@ -55,6 +55,16 @@
   .hint { font-size:11px; color:var(--dim); padding:0 12px 10px; }
   .empty { padding:40px; text-align:center; color:var(--dim); }
   .empty code { color:var(--accent); }
+  #modalBg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:8; }
+  #projModal { display:none; position:fixed; top:7%; left:50%; transform:translateX(-50%);
+    width:min(560px,94vw); max-height:82vh; overflow-y:auto; background:var(--panel);
+    border:1px solid var(--border); border-radius:12px; z-index:9; padding-bottom:8px; }
+  #projModal h3 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim);
+    padding:10px 14px 8px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--panel); }
+  .item { padding:9px 14px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);
+    display:flex; gap:8px; align-items:baseline; }
+  .item:hover { background:var(--bg); }
+  .item .sub { color:var(--dim); font-size:11px; margin-left:auto; }
   #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
     background:var(--ok); color:#04200d; font-weight:700; padding:10px 18px; border-radius:8px;
     opacity:0; transition:opacity .3s; pointer-events:none; z-index:9; }
@@ -70,12 +80,25 @@
 <header>
   <h1>🛰 Agent Mission Control</h1>
   <span class="team" id="teamName">ekip bekleniyor…</span>
-  <span class="team" id="activeProj" style="color:var(--ok)"></span>
+  <span class="team" id="activeProj" style="color:var(--ok);cursor:pointer" onclick="openProjModal()" title="proje seç"></span>
   <span class="mode" id="mode"></span>
   <span class="time" id="clock"></span>
 </header>
 <div id="stale">⚠️ Mac ile bağlantı kopuk görünüyor — veri eski. Toplayıcının çalıştığından emin ol: <code>node local/collector.js</code></div>
 <div id="toast"></div>
+<div id="modalBg" onclick="closeProjModal()"></div>
+<div id="projModal">
+  <h3>📌 Kayıtlı Projeler</h3>
+  <div id="mProjects"><div class="item"><span class="ev">henüz proje yok</span></div></div>
+  <h3>🐙 GitHub Repoları — birine tıkla, onunla çalışalım</h3>
+  <div id="mRepos"><div class="item"><span class="ev">yükleniyor…</span></div></div>
+  <h3>✨ Yeni Proje</h3>
+  <form id="projForm">
+    <input id="projName" placeholder="proje adı (küçük harf, rakam, tire)" pattern="[a-z0-9-]+" />
+    <button type="submit">Kur ve Deploy Et</button>
+  </form>
+  <div class="hint">Yeni proje: klasör + GitHub reposu + Vercel deploy zinciri kurulur, adres hazır olunca panelde belirir.</div>
+</div>
 <div class="layout">
   <div class="agents" id="agents"><div class="empty">Henüz veri yok.<br><br>
     Mac'te toplayıcı çalışıyor olmalı: <code>node local/collector.js</code></div></div>
@@ -89,13 +112,9 @@
       <div class="body" id="tasks"><span class="ev">görev yok</span></div>
     </div>
     <div class="card">
-      <h3>📁 Projeler</h3>
+      <h3 onclick="openProjModal()" style="cursor:pointer" title="proje seçim ekranını aç">📁 Projeler ▾</h3>
       <div class="body" id="projects"><span class="ev">henüz proje yok</span></div>
-      <form id="projForm">
-        <input id="projName" placeholder="yeni proje adı (küçük harf, tire)" pattern="[a-z0-9-]+" />
-        <button type="submit">Proje Kur ve Deploy Et</button>
-      </form>
-      <div class="hint">Lider: klasör + GitHub reposu + Vercel projesi kurar, deploy eder ve adresi buraya düşürür.</div>
+      <div class="hint">Başlığa tıkla: GitHub repolarından seç veya yeni proje kur.</div>
     </div>
     <div class="card">
       <h3>⏳ Bekleyen Direktifler</h3>
@@ -167,13 +186,15 @@ const backend = IS_LOCAL ? {
   assign: (agent, text) => post('/api/assign', { agent, text }),
   meta: (key, alias, role) => post('/api/agent-meta', { key, alias, role }),
   control: (action, name, role) => post('/api/team-control', { action, name, role }),
-  project: (action, name) => post('/api/project', { action, name }),
+  project: (action, name, repo) => post('/api/project', { action, name, repo }),
+  refreshRepos: () => post('/api/refresh-repos', {}),
 } : {
   state: () => rpc('state_get', { p_token: getToken() }),
   assign: (agent, text) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'assign', agent, text } }),
   meta: (key, alias, role) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'agent-meta', key, alias, role } }),
   control: (action, name, role) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'team-control', action, name, role } }),
-  project: (action, name) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'project', action, name } }),
+  project: (action, name, repo) => rpc('command_add', { p_token: getToken(), p_payload: { type: 'project', action, name, repo } }),
+  refreshRepos: () => rpc('command_add', { p_token: getToken(), p_payload: { type: 'refresh-repos' } }),
 };
 $('mode').textContent = IS_LOCAL ? '(yerel)' : '(web)';
 
@@ -246,6 +267,9 @@ async function tick() {
     return `<div class="task"><b>${esc(title)}</b>${esc(st)}${owner ? ' · @' + esc(owner) : ''}</div>`;
   }).join('') || '<span class="ev">görev yok</span>';
 
+  lastState = s;
+  if (modalOpen) renderModal(s);
+
   // Projeler
   const pi = s.projectsInfo || { active: null, projects: {} };
   $('activeProj').textContent = pi.active ? `📁 ${pi.active}` : '';
@@ -298,7 +322,46 @@ async function removeAgent(name) {
 
 async function switchProject(name) {
   await trySend(() => backend.project('switch', name), `✓ Aktif proje: ${name}`);
+  closeProjModal();
   tick();
+}
+
+// ---- proje seçim ekranı ----
+let modalOpen = false, lastState = null;
+function openProjModal() {
+  modalOpen = true;
+  $('modalBg').style.display = 'block';
+  $('projModal').style.display = 'block';
+  backend.refreshRepos().catch(() => {}); // repo listesi istek üzerine tazelenir
+  if (lastState) renderModal(lastState);
+}
+function closeProjModal() {
+  modalOpen = false;
+  $('modalBg').style.display = 'none';
+  $('projModal').style.display = 'none';
+}
+async function importRepo(name, full) {
+  if (!confirm(`"${full}" klonlanıp aktif proje yapılsın mı?`)) return;
+  const ok = await trySend(() => backend.project('import', name, full),
+    `✓ "${full}" lidere iletildi — klonlanınca aktif proje olacak`);
+  if (ok) closeProjModal();
+}
+function renderModal(s) {
+  const pi = s.projectsInfo || { active: null, projects: {} };
+  const registered = Object.keys(pi.projects);
+  $('mProjects').innerHTML = registered.map(n => {
+    const p = pi.projects[n], isActive = n === pi.active;
+    return `<div class="item" onclick="${isActive ? '' : `switchProject('${esc(n)}')`}">
+      <b>${isActive ? '● ' : ''}${esc(n)}</b> ${esc(p.status || '')}
+      <span class="sub">${isActive ? 'aktif' : 'geç →'}</span></div>`;
+  }).join('') || '<div class="item"><span class="ev">henüz proje yok</span></div>';
+
+  const repos = (s.ghRepos || []).filter(r => !registered.includes(r.name.toLowerCase()));
+  $('mRepos').innerHTML = repos.map(r => `
+    <div class="item" onclick="importRepo('${esc(r.name.toLowerCase())}','${esc(r.full)}')">
+      <b>${esc(r.name)}</b> <span class="sub">${esc((r.visibility || '').toLowerCase())} · getir →</span>
+    </div>`).join('') ||
+    '<div class="item"><span class="ev">liste yükleniyor — birkaç saniye içinde gelir…</span></div>';
 }
 
 // Gönderim sırasında formun butonunu kilitle → yanlışlıkla çift gönderim olmaz
@@ -325,8 +388,8 @@ $('projForm').addEventListener('submit', (ev) => {
     const name = $('projName').value.trim().toLowerCase();
     if (!name || !/^[a-z0-9-]+$/.test(name)) { toast('Proje adı: sadece küçük harf, rakam, tire', true); return; }
     const ok = await trySend(() => backend.project('create', name),
-      `✓ "${name}" kurulumu lidere iletildi — deploy bitince adresi burada görünecek`);
-    if (ok) $('projName').value = '';
+      `✓ "${name}" kurulumu lidere iletildi — deploy bitince adresi panelde görünecek`);
+    if (ok) { $('projName').value = ''; closeProjModal(); }
   });
 });
 
