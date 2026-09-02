@@ -26,6 +26,8 @@ const META_FILE = path.join(DATA_DIR, 'agents.json');
 const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json'); // { active, projects: { ad: {path, repo, url, status} } }
 const ASK_FILE = path.join(DATA_DIR, 'ask.json');       // lider soruları buraya yazar (panel formu)
 const ANSWER_FILE = path.join(DATA_DIR, 'answer.json'); // panel yanıtları buraya; lider bekler
+const PAUSE_FLAG = path.join(DATA_DIR, 'paused.flag');  // varsa: yeni komut iletimi durdurulmuş
+const HELD_FILE = path.join(DATA_DIR, 'held-commands.json'); // duraklatmada biriken komutlar
 const WORK_DIR = process.env.MC_WORK || path.join(HOME, 'work'); // projelerin ana klasörü
 // Bir işçi agent bu süre boyunca hareketsiz kalırsa (kapandı/bitti sayılır) panosu düşer.
 const WORKER_TTL_MS = Number(process.env.MC_WORKER_TTL_MS || 240_000); // 4 dk
@@ -243,6 +245,8 @@ function collectState() {
     projectsInfo: readJSON(PROJECTS_FILE) || { active: null, projects: {} },
     ghRepos,
     ask: readJSON(ASK_FILE) || null, // panelin göstereceği çok-sorulu form (varsa)
+    paused: isPaused(),
+    heldCount: heldList().length, // duraklatmada bekleyen komut sayısı
   };
   const now = Date.now();
 
@@ -467,6 +471,32 @@ function applyCommand(payload) {
   if (handler) handler(payload);
 }
 
+// ---- Duraklat / Devam ----
+function isPaused() { return fs.existsSync(PAUSE_FLAG); }
+function heldList() { return readJSON(HELD_FILE) || []; }
+function setPaused(on) {
+  if (on) { try { fs.writeFileSync(PAUSE_FLAG, new Date().toISOString()); } catch {} }
+  else { try { fs.unlinkSync(PAUSE_FLAG); } catch {} }
+}
+// Her komut buradan geçer: pause/resume özel, duraklatmada diğerleri biriktirilir.
+function processCommand(c) {
+  if (!c || typeof c !== 'object') return;
+  if (c.type === 'pause') { setPaused(true); return; }
+  if (c.type === 'resume') {
+    setPaused(false);
+    const held = heldList();
+    try { fs.unlinkSync(HELD_FILE); } catch {}
+    for (const h of held) applyCommand(h); // biriken komutları sırayla uygula
+    return;
+  }
+  if (isPaused()) {
+    const held = heldList(); held.push(c);
+    try { fs.writeFileSync(HELD_FILE, JSON.stringify(held, null, 2)); } catch {}
+    return;
+  }
+  applyCommand(c);
+}
+
 // ---------- Supabase eşitleme ----------
 async function rpc(fn, args) {
   const res = await fetch(`${ENV.SUPABASE_URL}/rest/v1/rpc/${fn}`, {
@@ -486,7 +516,7 @@ async function syncLoop() {
     const state = collectState();
     await rpc('state_put', { p_token: ENV.PANEL_TOKEN, p_state: state });
     const commands = await rpc('commands_pop', { p_token: ENV.PANEL_TOKEN });
-    for (const c of commands || []) applyCommand(c);
+    for (const c of commands || []) processCommand(c);
     if (lastSyncError) { console.log('eşitleme düzeldi'); lastSyncError = ''; }
   } catch (e) {
     if (String(e) !== lastSyncError) { console.error('eşitleme hatası:', String(e).slice(0, 200)); lastSyncError = String(e); }
@@ -510,6 +540,8 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/lead-msg' && req.method === 'POST') return readBody(j => json({ ok: doLeadMsg(j.text) }));
   if (req.url === '/api/lead-answer' && req.method === 'POST') return readBody(j => json({ ok: doLeadAnswer(j.index) }));
   if (req.url === '/api/form-answer' && req.method === 'POST') return readBody(j => json({ ok: doFormAnswer(j.id, j.answers) }));
+  if (req.url === '/api/pause' && req.method === 'POST') { setPaused(true); return json({ ok: true }); }
+  if (req.url === '/api/resume' && req.method === 'POST') { processCommand({ type: 'resume' }); return json({ ok: true }); }
   if (req.url === '/' || req.url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(path.join(REPO, 'index.html')));
